@@ -37,11 +37,11 @@ async function upsertUser(userId, username, displayName, avatarUrl) {
 }
 
 /** Registra una sesión de voz finalizada */
-async function saveVoiceSession(userId, channelId, channelName, joinedAt, leftAt) {
+async function saveVoiceSession(userId, channelId, channelName, joinedAt, leftAt, displayName = null) {
   const duration = Math.floor((leftAt - joinedAt) / 1000); // segundos
   if (duration < 10) return; // ignorar sesiones menores a 10 segundos
 
-  await supabase.from('voice_sessions').insert({
+  const { error } = await supabase.from('voice_sessions').insert({
     user_id: userId,
     channel_id: channelId,
     channel_name: channelName,
@@ -50,7 +50,12 @@ async function saveVoiceSession(userId, channelId, channelName, joinedAt, leftAt
     duration_seconds: duration,
   });
 
-  console.log(`[SESIÓN] ${userId} estuvo ${duration}s en ${channelName}`);
+  if (error) {
+    console.error(`[ERROR] No se pudo guardar la sesión de ${displayName || userId}:`, error.message);
+    return;
+  }
+
+  console.log(`[SESIÓN] ${displayName || userId} estuvo ${duration}s en ${channelName}`);
 }
 
 /** Obtiene el ranking del período especificado */
@@ -172,6 +177,24 @@ discord.once(Events.ClientReady, async (client) => {
   console.log(`[BOT] Conectado como ${client.user.tag} ✓`);
   await registerCommands();
 
+  // Recuperar usuarios que ya estén conectados al iniciar el bot
+  for (const guild of client.guilds.cache.values()) {
+    for (const [memberId, voiceState] of guild.voiceStates.cache) {
+      if (
+        voiceState.channelId &&
+        !voiceState.member?.user.bot &&
+        !IGNORED_CHANNELS.includes(voiceState.channelId)
+      ) {
+        activeSessions.set(memberId, {
+          channelId: voiceState.channelId,
+          channelName: voiceState.channel?.name || 'Desconocido',
+          joinedAt: Date.now(),
+        });
+        console.log(`[INICIALIZADO] ${voiceState.member?.displayName || memberId} ya estaba en ${voiceState.channel?.name}`);
+      }
+    }
+  }
+
   // ── Cron: postear ranking automático el último día del mes a las 23:00 ──
   if (process.env.RANKING_CHANNEL_ID) {
     cron.schedule('0 23 28-31 * *', async () => {
@@ -196,54 +219,68 @@ discord.once(Events.ClientReady, async (client) => {
 });
 
 discord.on(Events.VoiceStateUpdate, async (oldState, newState) => {
-  const userId = newState.id || oldState.id;
   const member = newState.member || oldState.member;
   if (!member || member.user.bot) return; // ignorar bots
 
-  const joinedChannel = newState.channelId;
-  const leftChannel = oldState.channelId;
+  const userId = member.id;
+  const oldChannelId = oldState.channelId;
+  const newChannelId = newState.channelId;
+
+  // Si no hubo cambio de canal (ej: mutearse, ensordecerse, prender cámara, transmitir pantalla),
+  // no hacemos nada para evitar reiniciar o perder la sesión de voz
+  if (oldChannelId === newChannelId) {
+    return;
+  }
 
   // Guardar/actualizar perfil del usuario
   if (member.user) {
-    await upsertUser(
+    upsertUser(
       userId,
       member.user.username,
       member.displayName || member.user.username,
       member.user.displayAvatarURL({ size: 128, extension: 'png' })
-    );
+    ).catch(err => console.error('[ERROR] Actualizando usuario:', err));
   }
 
-  // 1️⃣ Usuario se unió a un canal de voz
-  if (joinedChannel && !IGNORED_CHANNELS.includes(joinedChannel)) {
-    activeSessions.set(userId, {
-      channelId: joinedChannel,
-      channelName: newState.channel?.name || 'Desconocido',
-      joinedAt: Date.now(),
-    });
-    console.log(`[ENTRADA] ${member.displayName} entró a ${newState.channel?.name}`);
-  }
+  const isOldTracked = oldChannelId && !IGNORED_CHANNELS.includes(oldChannelId);
+  const isNewTracked = newChannelId && !IGNORED_CHANNELS.includes(newChannelId);
 
-  // 2️⃣ Usuario salió de un canal de voz
-  if (leftChannel && activeSessions.has(userId)) {
+  // 1️⃣ Si el usuario salió de un canal trackeado (o se movió a otro canal / AFK)
+  if (isOldTracked && activeSessions.has(userId)) {
     const session = activeSessions.get(userId);
     activeSessions.delete(userId);
-
-    // Si era un canal ignorado, no guardamos
-    if (IGNORED_CHANNELS.includes(leftChannel)) return;
-
     await saveVoiceSession(
       userId,
       session.channelId,
       session.channelName,
       session.joinedAt,
-      Date.now()
+      Date.now(),
+      member.displayName
     );
   }
 
-  // 3️⃣ Usuario cambió de canal (salió de uno, entró a otro)
-  if (joinedChannel && leftChannel && joinedChannel !== leftChannel) {
-    // Ya se registró la entrada al nuevo canal arriba
-    // La sesión del canal anterior ya se cerró también arriba
+  // 2️⃣ Si el usuario entró a un canal trackeado (desde desconectado o desde otro canal)
+  if (isNewTracked) {
+    // Si ya tenía una sesión activa por alguna razón, la cerramos primero
+    if (activeSessions.has(userId)) {
+      const session = activeSessions.get(userId);
+      activeSessions.delete(userId);
+      await saveVoiceSession(
+        userId,
+        session.channelId,
+        session.channelName,
+        session.joinedAt,
+        Date.now(),
+        member.displayName
+      );
+    }
+
+    activeSessions.set(userId, {
+      channelId: newChannelId,
+      channelName: newState.channel?.name || 'Desconocido',
+      joinedAt: Date.now(),
+    });
+    console.log(`[ENTRADA] ${member.displayName} entró a ${newState.channel?.name}`);
   }
 });
 
@@ -289,6 +326,23 @@ discord.on(Events.InteractionCreate, async (interaction) => {
     await interaction.editReply({ embeds: [embed] });
   }
 });
+
+// ─── Apagado limpio (guardar sesiones activas en deploy / reinicio) ─────────
+async function handleShutdown() {
+  console.log('[BOT] Guardando sesiones activas antes de apagar...');
+  const now = Date.now();
+  const promises = [];
+  for (const [userId, session] of activeSessions.entries()) {
+    promises.push(
+      saveVoiceSession(userId, session.channelId, session.channelName, session.joinedAt, now)
+    );
+  }
+  await Promise.allSettled(promises);
+  process.exit(0);
+}
+
+process.on('SIGTERM', handleShutdown);
+process.on('SIGINT', handleShutdown);
 
 // ─── Iniciar bot ──────────────────────────────────────────────────────────────
 discord.login(process.env.DISCORD_TOKEN);
