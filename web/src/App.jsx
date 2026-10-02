@@ -1,12 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from './supabaseClient';
 import './App.css';
 
 const SERVER_NAME = import.meta.env.VITE_SERVER_NAME || 'Mi Servidor';
+const DISCORD_GUILD_ID = import.meta.env.VITE_DISCORD_GUILD_ID || '387644868744445952';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatDuration(seconds) {
-  const s = Number(seconds);
+  const s = Number(seconds) || 0;
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   if (h === 0) return `${m}m`;
@@ -29,7 +30,7 @@ function getPeriodLabel(period) {
   return now.toLocaleString('es-AR', { month: 'long', year: 'numeric' });
 }
 
-// ─── Componente tarjeta de usuario ───────────────────────────────────────────
+// ─── Componente Tarjeta de Usuario ───────────────────────────────────────────
 function UserCard({ entry, index, maxSeconds }) {
   const bar = getBarWidth(entry.total_seconds, maxSeconds);
   const isFirst = index === 0;
@@ -55,22 +56,59 @@ function UserCard({ entry, index, maxSeconds }) {
 
       <div className="time-badge">
         <span className="time-value">{formatDuration(entry.total_seconds)}</span>
-        <span className="sessions-label">{entry.session_count} sesiones</span>
+        <span className="sessions-label">{entry.session_count} {entry.session_count === 1 ? 'sesión' : 'sesiones'}</span>
       </div>
     </div>
   );
 }
 
-// ─── App principal ────────────────────────────────────────────────────────────
+// ─── App Principal ────────────────────────────────────────────────────────────
 export default function App() {
   const [period, setPeriod] = useState('month');
   const [ranking, setRanking] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
   const [lastUpdated, setLastUpdated] = useState(null);
   const [error, setError] = useState(null);
 
-  const fetchRanking = useCallback(async () => {
-    setLoading(true);
+  // Estados de presencia en vivo desde Discord
+  const [discordOnline, setDiscordOnline] = useState(null);
+  const [discordInVoice, setDiscordInVoice] = useState(null);
+
+  // Consultar miembros en línea en tiempo real mediante Discord Guild Widget
+  useEffect(() => {
+    if (!DISCORD_GUILD_ID) return;
+
+    let isMounted = true;
+    async function fetchDiscordPresence() {
+      try {
+        const res = await fetch(`https://discord.com/api/guilds/${DISCORD_GUILD_ID}/widget.json`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!isMounted) return;
+
+        if (typeof data.presence_count === 'number') {
+          setDiscordOnline(data.presence_count);
+        }
+        if (Array.isArray(data.members)) {
+          const inVoice = data.members.filter(m => m.channel_id).length;
+          setDiscordInVoice(inVoice);
+        }
+      } catch {
+        // Silencioso si el widget no está habilitado o hay error de red
+      }
+    }
+
+    fetchDiscordPresence();
+    const timer = setInterval(fetchDiscordPresence, 45 * 1000); // Actualiza cada 45s
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const fetchRanking = useCallback(async (isSilent = false) => {
+    if (!isSilent) setLoading(true);
     setError(null);
 
     const view = period === 'week' ? 'ranking_week' : 'ranking_month';
@@ -78,7 +116,7 @@ export default function App() {
       .from(view)
       .select('*')
       .order('total_seconds', { ascending: false })
-      .limit(15);
+      .limit(100);
 
     if (err) {
       setError('Error al cargar el ranking. ¿Está configurado Supabase?');
@@ -88,17 +126,67 @@ export default function App() {
     }
 
     setLastUpdated(new Date());
-    setLoading(false);
+    if (!isSilent) setLoading(false);
   }, [period]);
 
   useEffect(() => {
-    fetchRanking();
-    // Refresh cada 2 minutos
-    const interval = setInterval(fetchRanking, 2 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [fetchRanking]);
+    let isMounted = true;
+
+    async function loadData() {
+      const view = period === 'week' ? 'ranking_week' : 'ranking_month';
+      const { data, error: err } = await supabase
+        .from(view)
+        .select('*')
+        .order('total_seconds', { ascending: false })
+        .limit(100);
+
+      if (!isMounted) return;
+
+      if (err) {
+        setError('Error al cargar el ranking. ¿Está configurado Supabase?');
+        console.error(err);
+      } else {
+        setRanking(data || []);
+        setError(null);
+      }
+      setLastUpdated(new Date());
+      setLoading(false);
+    }
+
+    loadData();
+
+    // Auto-refresh del ranking cada 2 minutos
+    const interval = setInterval(() => {
+      fetchRanking(true);
+    }, 2 * 60 * 1000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [period, fetchRanking]);
+
+  // Filtrado por buscador
+  const filteredRanking = useMemo(() => {
+    if (!search.trim()) return ranking;
+    const q = search.toLowerCase();
+    return ranking.filter(entry =>
+      (entry.display_name && entry.display_name.toLowerCase().includes(q)) ||
+      (entry.username && entry.username.toLowerCase().includes(q))
+    );
+  }, [ranking, search]);
+
+  // Estadísticas globales del servidor
+  const stats = useMemo(() => {
+    const totalSecs = ranking.reduce((acc, curr) => acc + (Number(curr.total_seconds) || 0), 0);
+    return {
+      totalHours: Math.round(totalSecs / 3600),
+    };
+  }, [ranking]);
 
   const maxSeconds = ranking[0]?.total_seconds ?? 0;
+  const isSearching = Boolean(search.trim());
+  const showPodium = !isSearching && ranking.length >= 3;
 
   return (
     <div className="app">
@@ -108,34 +196,81 @@ export default function App() {
           <div className="logo">🎙️</div>
           <div>
             <h1 className="title">{SERVER_NAME}</h1>
-            <p className="subtitle">Ranking de horas en voz</p>
+            <p className="subtitle">Ranking de tiempo en canales de voz</p>
           </div>
+        </div>
+
+        {/* Resumen de actividad en tiempo real */}
+        <div className="stats-badges">
+          {discordOnline !== null ? (
+            <div className="stat-pill online-pill" title="Miembros conectados a Discord en este momento">
+              <span className="online-dot" />
+              <span className="stat-pill-label">En línea:</span>
+              <span className="stat-pill-val">{discordOnline}</span>
+            </div>
+          ) : (
+            <div className="stat-pill" title="Miembros con tiempo acumulado en el ranking">
+              <span className="stat-pill-label">En ranking:</span>
+              <span className="stat-pill-val">{ranking.length}</span>
+            </div>
+          )}
+
+          {discordInVoice !== null && discordInVoice > 0 && (
+            <div className="stat-pill voice-pill" title="Miembros en canales de voz ahora mismo">
+              <span className="stat-pill-icon">🔊</span>
+              <span className="stat-pill-label">En voz ahora:</span>
+              <span className="stat-pill-val">{discordInVoice}</span>
+            </div>
+          )}
+
+          {ranking.length > 0 && (
+            <div className="stat-pill">
+              <span className="stat-pill-label">Total en voz:</span>
+              <span className="stat-pill-val">~{stats.totalHours}h</span>
+            </div>
+          )}
         </div>
       </header>
 
-      {/* Controles */}
+      {/* Controles de período y actualización */}
       <div className="controls">
         <div className="period-selector">
           <button
             className={`period-btn ${period === 'month' ? 'active' : ''}`}
-            onClick={() => setPeriod('month')}
+            onClick={() => { setLoading(true); setPeriod('month'); }}
           >
             📅 {getPeriodLabel('month')}
           </button>
           <button
             className={`period-btn ${period === 'week' ? 'active' : ''}`}
-            onClick={() => setPeriod('week')}
+            onClick={() => { setLoading(true); setPeriod('week'); }}
           >
             📆 Esta semana
           </button>
         </div>
 
-        <button className="refresh-btn" onClick={fetchRanking} disabled={loading}>
-          {loading ? '⏳' : '🔄'} Actualizar
-        </button>
+        <div className="right-controls">
+          <div className="search-box">
+            <span className="search-icon">🔍</span>
+            <input
+              type="text"
+              placeholder="Buscar miembro..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="search-input"
+            />
+            {search && (
+              <button className="clear-search" onClick={() => setSearch('')}>✕</button>
+            )}
+          </div>
+
+          <button className="refresh-btn" onClick={() => fetchRanking(false)} disabled={loading}>
+            {loading ? '⏳' : '🔄'}
+          </button>
+        </div>
       </div>
 
-      {/* Contenido */}
+      {/* Contenido Principal */}
       <main className="main">
         {error && (
           <div className="error-card">
@@ -146,7 +281,7 @@ export default function App() {
         {loading && !error && (
           <div className="loading">
             <div className="spinner" />
-            <p>Cargando ranking...</p>
+            <p>Cargando ranking de voz...</p>
           </div>
         )}
 
@@ -159,13 +294,14 @@ export default function App() {
 
         {!loading && !error && ranking.length > 0 && (
           <>
-            {/* Podio top 3 */}
-            {ranking.length >= 3 && (
+            {/* Podio Top 3 exclusivo cuando no se está buscando */}
+            {showPodium && (
               <div className="podium">
                 {[ranking[1], ranking[0], ranking[2]].map((entry, i) => {
                   const realIndex = [1, 0, 2][i];
                   return (
                     <div key={entry.user_id} className={`podium-item podium-${realIndex + 1}`}>
+                      <div className="podium-badge">{getMedalEmoji(realIndex)}</div>
                       <img
                         className="podium-avatar"
                         src={entry.avatar_url || `https://cdn.discordapp.com/embed/avatars/${realIndex % 6}.png`}
@@ -181,16 +317,32 @@ export default function App() {
               </div>
             )}
 
-            {/* Lista completa */}
+            {/* Lista: Si hay podio, muestra puestos a partir del 4°. Si se busca o hay < 3, muestra la lista completa sin duplicar */}
             <div className="ranking-list">
-              {ranking.map((entry, index) => (
-                <UserCard
-                  key={entry.user_id}
-                  entry={entry}
-                  index={index}
-                  maxSeconds={maxSeconds}
-                />
-              ))}
+              {showPodium && ranking.length > 3 && (
+                <div className="list-section-header">
+                  <span>Posiciones siguientes</span>
+                </div>
+              )}
+
+              {isSearching && filteredRanking.length === 0 && (
+                <div className="no-search-results">
+                  No se encontraron miembros con "{search}"
+                </div>
+              )}
+
+              {(showPodium ? ranking.slice(3) : filteredRanking).map((entry, idx) => {
+                // Calcular el puesto real en la tabla
+                const originalIndex = showPodium ? idx + 3 : ranking.findIndex(r => r.user_id === entry.user_id);
+                return (
+                  <UserCard
+                    key={entry.user_id}
+                    entry={entry}
+                    index={originalIndex >= 0 ? originalIndex : idx}
+                    maxSeconds={maxSeconds}
+                  />
+                );
+              })}
             </div>
           </>
         )}
@@ -199,9 +351,9 @@ export default function App() {
       {/* Footer */}
       <footer className="footer">
         {lastUpdated && (
-          <p>Actualizado: {lastUpdated.toLocaleTimeString('es-AR')}</p>
+          <p>Última actualización: {lastUpdated.toLocaleTimeString('es-AR')}</p>
         )}
-        <p>Refresh automático cada 2 minutos</p>
+        <p>Sincronización periódica automática • Trackea con Discord Voice Tracker</p>
       </footer>
     </div>
   );
