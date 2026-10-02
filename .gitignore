@@ -1,18 +1,16 @@
 # node_modules
 node_modules/
 */node_modules/
-
 # Environment files
 .env
 .env.local
 .env.*.local
 *.env
-
+!.env.example
 # Build outputs
 dist/
 build/
 web/dist/
-
 # OS / IDE files
 .DS_Store
 Thumbs.db
