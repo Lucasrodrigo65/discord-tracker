@@ -30,34 +30,132 @@ function getPeriodLabel(period) {
   return now.toLocaleString('es-AR', { month: 'long', year: 'numeric' });
 }
 
+// ─── Componente Panel de Dúos (Horas Compartidas) ───────────────────────────
+function SharedTimePanel({ entry, period, onClose }) {
+  const [partners, setPartners] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function fetchPartners() {
+      setLoading(true);
+      const { data, error } = await supabase.rpc('get_user_shared_time', {
+        target_user_id: entry.user_id,
+        period_type: period,
+      });
+
+      if (isMounted) {
+        if (!error && data) {
+          setPartners(data);
+        } else {
+          console.error('Error fetching shared time:', error);
+          setPartners([]);
+        }
+        setLoading(false);
+      }
+    }
+
+    fetchPartners();
+    return () => { isMounted = false; };
+  }, [entry.user_id, period]);
+
+  return (
+    <div className="shared-time-panel">
+      <div className="shared-time-header">
+        <div>
+          <h4 className="shared-title">👥 Dúos de voz de {entry.display_name || entry.username}</h4>
+          <span className="shared-subtitle">Miembros con los que más tiempo coincidió en llamadas ({period === 'week' ? 'esta semana' : 'este mes'})</span>
+        </div>
+        {onClose && (
+          <button className="close-shared-btn" onClick={onClose} title="Cerrar detalles">✕</button>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="shared-loading">
+          <div className="spinner-small" />
+          <span>Calculando coincidencia de tiempo...</span>
+        </div>
+      ) : partners.length === 0 ? (
+        <div className="shared-empty">
+          <span>👻 No coincidió en canales de voz con otros miembros en este período.</span>
+        </div>
+      ) : (
+        <div className="partners-list">
+          {partners.map((partner, pIdx) => {
+            const pct = Math.min(100, Math.round((partner.shared_seconds / entry.total_seconds) * 100));
+            return (
+              <div key={partner.partner_id} className="partner-card">
+                <span className="partner-rank">#{pIdx + 1}</span>
+                <img
+                  className="partner-avatar"
+                  src={partner.avatar_url || `https://cdn.discordapp.com/embed/avatars/${pIdx % 6}.png`}
+                  alt={partner.display_name}
+                  onError={e => { e.target.src = `https://cdn.discordapp.com/embed/avatars/${pIdx % 6}.png`; }}
+                />
+                <div className="partner-info">
+                  <div className="partner-name-row">
+                    <span className="partner-name">{partner.display_name}</span>
+                    <span className="partner-username">@{partner.username}</span>
+                  </div>
+                  <div className="partner-bar-bg">
+                    <div className="partner-bar-fill" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+                <div className="partner-time">
+                  <span className="partner-time-val">{formatDuration(partner.shared_seconds)}</span>
+                  <span className="partner-pct">{pct}% de coincidencia</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Componente Tarjeta de Usuario ───────────────────────────────────────────
-function UserCard({ entry, index, maxSeconds }) {
+function UserCard({ entry, index, maxSeconds, isExpanded, onToggleExpand, period }) {
   const bar = getBarWidth(entry.total_seconds, maxSeconds);
   const isFirst = index === 0;
 
   return (
-    <div className={`user-card ${isFirst ? 'first-place' : ''}`}>
-      <div className="rank-badge">{getMedalEmoji(index)}</div>
+    <div className={`user-card-wrapper ${isExpanded ? 'is-expanded' : ''}`}>
+      <div
+        className={`user-card ${isFirst ? 'first-place' : ''} ${isExpanded ? 'active-card' : ''}`}
+        onClick={onToggleExpand}
+        title="Haz clic para desplegar compañeros de voz"
+      >
+        <div className="rank-badge">{getMedalEmoji(index)}</div>
 
-      <img
-        className="avatar"
-        src={entry.avatar_url || `https://cdn.discordapp.com/embed/avatars/${index % 6}.png`}
-        alt={entry.display_name}
-        onError={e => { e.target.src = `https://cdn.discordapp.com/embed/avatars/${index % 6}.png`; }}
-      />
+        <img
+          className="avatar"
+          src={entry.avatar_url || `https://cdn.discordapp.com/embed/avatars/${index % 6}.png`}
+          alt={entry.display_name}
+          onError={e => { e.target.src = `https://cdn.discordapp.com/embed/avatars/${index % 6}.png`; }}
+        />
 
-      <div className="user-info">
-        <span className="display-name">{entry.display_name || entry.username}</span>
-        <span className="username">@{entry.username}</span>
-        <div className="progress-bar-container">
-          <div className="progress-bar" style={{ width: `${bar}%` }} />
+        <div className="user-info">
+          <div className="name-row">
+            <span className="display-name">{entry.display_name || entry.username}</span>
+            <span className="expand-pill">{isExpanded ? '▲ Dúos' : '▼ Ver dúos'}</span>
+          </div>
+          <span className="username">@{entry.username}</span>
+          <div className="progress-bar-container">
+            <div className="progress-bar" style={{ width: `${bar}%` }} />
+          </div>
+        </div>
+
+        <div className="time-badge">
+          <span className="time-value">{formatDuration(entry.total_seconds)}</span>
+          <span className="sessions-label">{entry.session_count} {entry.session_count === 1 ? 'sesión' : 'sesiones'}</span>
         </div>
       </div>
 
-      <div className="time-badge">
-        <span className="time-value">{formatDuration(entry.total_seconds)}</span>
-        <span className="sessions-label">{entry.session_count} {entry.session_count === 1 ? 'sesión' : 'sesiones'}</span>
-      </div>
+      {isExpanded && (
+        <SharedTimePanel entry={entry} period={period} onClose={onToggleExpand} />
+      )}
     </div>
   );
 }
@@ -70,6 +168,9 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [lastUpdated, setLastUpdated] = useState(null);
   const [error, setError] = useState(null);
+
+  // ID del usuario expandido para ver horas compartidas
+  const [expandedUserId, setExpandedUserId] = useState(null);
 
   // Estados de presencia en vivo desde Discord
   const [discordOnline, setDiscordOnline] = useState(null);
@@ -100,7 +201,7 @@ export default function App() {
     }
 
     fetchDiscordPresence();
-    const timer = setInterval(fetchDiscordPresence, 45 * 1000); // Actualiza cada 45s
+    const timer = setInterval(fetchDiscordPresence, 45 * 1000);
     return () => {
       isMounted = false;
       clearInterval(timer);
@@ -155,7 +256,6 @@ export default function App() {
 
     loadData();
 
-    // Auto-refresh del ranking cada 2 minutos
     const interval = setInterval(() => {
       fetchRanking(true);
     }, 2 * 60 * 1000);
@@ -166,7 +266,6 @@ export default function App() {
     };
   }, [period, fetchRanking]);
 
-  // Filtrado por buscador
   const filteredRanking = useMemo(() => {
     if (!search.trim()) return ranking;
     const q = search.toLowerCase();
@@ -176,7 +275,6 @@ export default function App() {
     );
   }, [ranking, search]);
 
-  // Estadísticas globales del servidor
   const stats = useMemo(() => {
     const totalSecs = ranking.reduce((acc, curr) => acc + (Number(curr.total_seconds) || 0), 0);
     return {
@@ -187,6 +285,16 @@ export default function App() {
   const maxSeconds = ranking[0]?.total_seconds ?? 0;
   const isSearching = Boolean(search.trim());
   const showPodium = !isSearching && ranking.length >= 3;
+
+  // Usuario del podio actualmente expandido
+  const expandedPodiumUser = useMemo(() => {
+    if (!showPodium || !expandedUserId) return null;
+    return ranking.slice(0, 3).find(r => r.user_id === expandedUserId) || null;
+  }, [showPodium, expandedUserId, ranking]);
+
+  const toggleExpand = (userId) => {
+    setExpandedUserId(prev => (prev === userId ? null : userId));
+  };
 
   return (
     <div className="app">
@@ -200,7 +308,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Resumen de actividad en tiempo real */}
         <div className="stats-badges">
           {discordOnline !== null ? (
             <div className="stat-pill online-pill" title="Miembros conectados a Discord en este momento">
@@ -232,18 +339,18 @@ export default function App() {
         </div>
       </header>
 
-      {/* Controles de período y actualización */}
+      {/* Controles */}
       <div className="controls">
         <div className="period-selector">
           <button
             className={`period-btn ${period === 'month' ? 'active' : ''}`}
-            onClick={() => { setLoading(true); setPeriod('month'); }}
+            onClick={() => { setLoading(true); setPeriod('month'); setExpandedUserId(null); }}
           >
             📅 {getPeriodLabel('month')}
           </button>
           <button
             className={`period-btn ${period === 'week' ? 'active' : ''}`}
-            onClick={() => { setLoading(true); setPeriod('week'); }}
+            onClick={() => { setLoading(true); setPeriod('week'); setExpandedUserId(null); }}
           >
             📆 Esta semana
           </button>
@@ -294,30 +401,50 @@ export default function App() {
 
         {!loading && !error && ranking.length > 0 && (
           <>
-            {/* Podio Top 3 exclusivo cuando no se está buscando */}
+            {/* Podio Top 3 */}
             {showPodium && (
-              <div className="podium">
-                {[ranking[1], ranking[0], ranking[2]].map((entry, i) => {
-                  const realIndex = [1, 0, 2][i];
-                  return (
-                    <div key={entry.user_id} className={`podium-item podium-${realIndex + 1}`}>
-                      <div className="podium-badge">{getMedalEmoji(realIndex)}</div>
-                      <img
-                        className="podium-avatar"
-                        src={entry.avatar_url || `https://cdn.discordapp.com/embed/avatars/${realIndex % 6}.png`}
-                        alt={entry.display_name}
-                        onError={e => { e.target.src = `https://cdn.discordapp.com/embed/avatars/${realIndex % 6}.png`; }}
-                      />
-                      <div className="podium-name">{entry.display_name || entry.username}</div>
-                      <div className="podium-time">{formatDuration(entry.total_seconds)}</div>
-                      <div className="podium-block" />
-                    </div>
-                  );
-                })}
+              <div className="podium-section">
+                <div className="podium">
+                  {[ranking[1], ranking[0], ranking[2]].map((entry, i) => {
+                    const realIndex = [1, 0, 2][i];
+                    const isSelected = expandedUserId === entry.user_id;
+                    return (
+                      <div
+                        key={entry.user_id}
+                        className={`podium-item podium-${realIndex + 1} ${isSelected ? 'selected' : ''}`}
+                        onClick={() => toggleExpand(entry.user_id)}
+                        title="Haz clic para ver compañeros de voz"
+                      >
+                        <div className="podium-badge">{getMedalEmoji(realIndex)}</div>
+                        <img
+                          className="podium-avatar"
+                          src={entry.avatar_url || `https://cdn.discordapp.com/embed/avatars/${realIndex % 6}.png`}
+                          alt={entry.display_name}
+                          onError={e => { e.target.src = `https://cdn.discordapp.com/embed/avatars/${realIndex % 6}.png`; }}
+                        />
+                        <div className="podium-name">{entry.display_name || entry.username}</div>
+                        <div className="podium-time">{formatDuration(entry.total_seconds)}</div>
+                        <span className="podium-click-hint">{isSelected ? '▲ Ocultar dúos' : '▼ Ver dúos'}</span>
+                        <div className="podium-block" />
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Panel de horas compartidas si se selecciona un usuario del podio */}
+                {expandedPodiumUser && (
+                  <div className="podium-shared-container">
+                    <SharedTimePanel
+                      entry={expandedPodiumUser}
+                      period={period}
+                      onClose={() => setExpandedUserId(null)}
+                    />
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Lista: Si hay podio, muestra puestos a partir del 4°. Si se busca o hay < 3, muestra la lista completa sin duplicar */}
+            {/* Lista de Ranking */}
             <div className="ranking-list">
               {showPodium && ranking.length > 3 && (
                 <div className="list-section-header">
@@ -332,7 +459,6 @@ export default function App() {
               )}
 
               {(showPodium ? ranking.slice(3) : filteredRanking).map((entry, idx) => {
-                // Calcular el puesto real en la tabla
                 const originalIndex = showPodium ? idx + 3 : ranking.findIndex(r => r.user_id === entry.user_id);
                 return (
                   <UserCard
@@ -340,6 +466,9 @@ export default function App() {
                     entry={entry}
                     index={originalIndex >= 0 ? originalIndex : idx}
                     maxSeconds={maxSeconds}
+                    isExpanded={expandedUserId === entry.user_id}
+                    onToggleExpand={() => toggleExpand(entry.user_id)}
+                    period={period}
                   />
                 );
               })}
@@ -348,7 +477,6 @@ export default function App() {
         )}
       </main>
 
-      {/* Footer */}
       <footer className="footer">
         {lastUpdated && (
           <p>Última actualización: {lastUpdated.toLocaleTimeString('es-AR')}</p>

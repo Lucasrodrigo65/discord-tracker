@@ -90,3 +90,48 @@ CREATE POLICY "Service role can write users"
 CREATE POLICY "Service role can write sessions"
   ON voice_sessions FOR ALL
   USING (auth.role() = 'service_role');
+
+-- ============================================================
+-- Función RPC: Obtener los compañeros con más horas compartidas
+-- ============================================================
+CREATE OR REPLACE FUNCTION get_user_shared_time(target_user_id TEXT, period_type TEXT DEFAULT 'month')
+RETURNS TABLE (
+  partner_id TEXT,
+  display_name TEXT,
+  username TEXT,
+  avatar_url TEXT,
+  shared_seconds BIGINT
+) AS $$
+DECLARE
+  period_start_ts TIMESTAMPTZ;
+BEGIN
+  IF period_type = 'week' THEN
+    period_start_ts := NOW() - INTERVAL '7 days';
+  ELSE
+    period_start_ts := DATE_TRUNC('month', NOW());
+  END IF;
+
+  RETURN QUERY
+  SELECT
+    u.id AS partner_id,
+    COALESCE(u.display_name, u.username, 'Usuario') AS display_name,
+    COALESCE(u.username, '') AS username,
+    COALESCE(u.avatar_url, '') AS avatar_url,
+    SUM(
+      EXTRACT(EPOCH FROM (LEAST(a.left_at, b.left_at) - GREATEST(a.joined_at, b.joined_at)))::BIGINT
+    ) AS shared_seconds
+  FROM voice_sessions a
+  JOIN voice_sessions b
+    ON a.channel_id = b.channel_id
+   AND a.user_id <> b.user_id
+   AND a.joined_at < b.left_at
+   AND a.left_at > b.joined_at
+  JOIN users u ON u.id = b.user_id
+  WHERE a.user_id = target_user_id
+    AND a.joined_at >= period_start_ts
+    AND b.joined_at >= period_start_ts
+  GROUP BY u.id, u.display_name, u.username, u.avatar_url
+  ORDER BY shared_seconds DESC
+  LIMIT 5;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
