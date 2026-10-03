@@ -37,11 +37,12 @@ async function upsertUser(userId, username, displayName, avatarUrl) {
 }
 
 /** Registra una sesión de voz finalizada */
-async function saveVoiceSession(userId, channelId, channelName, joinedAt, leftAt, displayName = null) {
+async function saveVoiceSession(guildId, userId, channelId, channelName, joinedAt, leftAt, displayName = null) {
   const duration = Math.floor((leftAt - joinedAt) / 1000); // segundos
   if (duration < 10) return; // ignorar sesiones menores a 10 segundos
 
   const { error } = await supabase.from('voice_sessions').insert({
+    guild_id: guildId,
     user_id: userId,
     channel_id: channelId,
     channel_name: channelName,
@@ -186,6 +187,7 @@ discord.once(Events.ClientReady, async (client) => {
         !IGNORED_CHANNELS.includes(voiceState.channelId)
       ) {
         activeSessions.set(memberId, {
+          guildId: guild.id,
           channelId: voiceState.channelId,
           channelName: voiceState.channel?.name || 'Desconocido',
           joinedAt: Date.now(),
@@ -250,6 +252,7 @@ discord.on(Events.VoiceStateUpdate, async (oldState, newState) => {
     const session = activeSessions.get(userId);
     activeSessions.delete(userId);
     await saveVoiceSession(
+      session.guildId || member.guild.id,
       userId,
       session.channelId,
       session.channelName,
@@ -266,6 +269,7 @@ discord.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       const session = activeSessions.get(userId);
       activeSessions.delete(userId);
       await saveVoiceSession(
+        session.guildId || member.guild.id,
         userId,
         session.channelId,
         session.channelName,
@@ -276,6 +280,7 @@ discord.on(Events.VoiceStateUpdate, async (oldState, newState) => {
     }
 
     activeSessions.set(userId, {
+      guildId: member.guild.id,
       channelId: newChannelId,
       channelName: newState.channel?.name || 'Desconocido',
       joinedAt: Date.now(),
@@ -334,7 +339,7 @@ async function handleShutdown() {
   const promises = [];
   for (const [userId, session] of activeSessions.entries()) {
     promises.push(
-      saveVoiceSession(userId, session.channelId, session.channelName, session.joinedAt, now)
+      saveVoiceSession(session.guildId || process.env.GUILD_ID, userId, session.channelId, session.channelName, session.joinedAt, now)
     );
   }
   await Promise.allSettled(promises);

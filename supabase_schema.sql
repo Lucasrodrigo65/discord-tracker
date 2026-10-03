@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS users (
 -- Tabla de sesiones de voz
 CREATE TABLE IF NOT EXISTS voice_sessions (
   id BIGSERIAL PRIMARY KEY,
+  guild_id TEXT,                    -- Discord server ID
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   channel_id TEXT NOT NULL,
   channel_name TEXT,

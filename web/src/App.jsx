@@ -82,7 +82,7 @@ export default function App() {
     let isMounted = true;
     async function fetchDiscordPresence() {
       try {
-        const res = await fetch(`https://discord.com/api/guilds/${DISCORD_GUILD_ID}/widget.json`);
+        const res = await fetch(`https://discord.com/api/guilds/${DISCORD_GUILD_ID}/widget.json?_t=${Date.now()}`);
         if (!res.ok) return;
         const data = await res.json();
         if (!isMounted) return;
@@ -91,11 +91,11 @@ export default function App() {
           setDiscordOnline(data.presence_count);
         }
         if (Array.isArray(data.members)) {
-          const inVoice = data.members.filter(m => m.channel_id).length;
+          const inVoice = data.members.filter(m => Boolean(m.channel_id)).length;
           setDiscordInVoice(inVoice);
         }
-      } catch {
-        // Silencioso si el widget no está habilitado o hay error de red
+      } catch (err) {
+        console.warn('Error obteniendo widget de Discord:', err);
       }
     }
 
