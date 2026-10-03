@@ -114,9 +114,9 @@ BEGIN
   RETURN QUERY
   SELECT
     u.id AS partner_id,
-    COALESCE(u.display_name, u.username, 'Usuario') AS display_name,
-    COALESCE(u.username, '') AS username,
-    COALESCE(u.avatar_url, '') AS avatar_url,
+    COALESCE(u.display_name, u.username, 'Usuario')::TEXT AS display_name,
+    COALESCE(u.username, '')::TEXT AS username,
+    COALESCE(u.avatar_url, '')::TEXT AS avatar_url,
     SUM(
       EXTRACT(EPOCH FROM (LEAST(a.left_at, b.left_at) - GREATEST(a.joined_at, b.joined_at)))::BIGINT
     ) AS shared_seconds
@@ -128,10 +128,14 @@ BEGIN
    AND a.left_at > b.joined_at
   JOIN users u ON u.id = b.user_id
   WHERE a.user_id = target_user_id
-    AND a.joined_at >= period_start_ts
-    AND b.joined_at >= period_start_ts
+    AND a.left_at >= period_start_ts
+    AND b.left_at >= period_start_ts
   GROUP BY u.id, u.display_name, u.username, u.avatar_url
+  HAVING SUM(EXTRACT(EPOCH FROM (LEAST(a.left_at, b.left_at) - GREATEST(a.joined_at, b.joined_at)))::BIGINT) > 0
   ORDER BY shared_seconds DESC
   LIMIT 5;
 END;
 $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
+
+-- Otorgar permiso de ejecución al rol público/anónimo
+GRANT EXECUTE ON FUNCTION get_user_shared_time(TEXT, TEXT) TO anon, authenticated, service_role;
