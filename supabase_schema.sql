@@ -94,6 +94,8 @@ CREATE POLICY "Service role can write sessions"
 -- ============================================================
 -- Función RPC: Obtener los compañeros con más horas compartidas
 -- ============================================================
+DROP FUNCTION IF EXISTS get_user_shared_time(TEXT, TEXT);
+
 CREATE OR REPLACE FUNCTION get_user_shared_time(target_user_id TEXT, period_type TEXT DEFAULT 'month')
 RETURNS TABLE (
   partner_id TEXT,
@@ -117,9 +119,9 @@ BEGIN
     COALESCE(u.display_name, u.username, 'Usuario')::TEXT AS display_name,
     COALESCE(u.username, '')::TEXT AS username,
     COALESCE(u.avatar_url, '')::TEXT AS avatar_url,
-    SUM(
-      EXTRACT(EPOCH FROM (LEAST(a.left_at, b.left_at) - GREATEST(a.joined_at, b.joined_at)))::BIGINT
-    ) AS shared_seconds
+    CAST(ROUND(SUM(
+      EXTRACT(EPOCH FROM (LEAST(a.left_at, b.left_at) - GREATEST(a.joined_at, b.joined_at)))
+    )) AS BIGINT) AS shared_seconds
   FROM voice_sessions a
   JOIN voice_sessions b
     ON a.channel_id = b.channel_id
@@ -131,7 +133,7 @@ BEGIN
     AND a.left_at >= period_start_ts
     AND b.left_at >= period_start_ts
   GROUP BY u.id, u.display_name, u.username, u.avatar_url
-  HAVING SUM(EXTRACT(EPOCH FROM (LEAST(a.left_at, b.left_at) - GREATEST(a.joined_at, b.joined_at)))::BIGINT) > 0
+  HAVING SUM(EXTRACT(EPOCH FROM (LEAST(a.left_at, b.left_at) - GREATEST(a.joined_at, b.joined_at)))) > 0
   ORDER BY shared_seconds DESC
   LIMIT 5;
 END;
